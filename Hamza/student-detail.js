@@ -15,4 +15,4 @@ let student = {
 }
 
 console.log("student details:");
-console.log(student);
+console.log(student); 
