@@ -1,0 +1,11 @@
+# Node modules ko ignore karo
+node_modules/
+
+# Agar .env file hai to ignore karna best practice hai
+.env
+
+# Agar logs ignore karne hai
+*.log
+
+# Agar OS specific files ignore karna chahte ho
+.DS_Store
