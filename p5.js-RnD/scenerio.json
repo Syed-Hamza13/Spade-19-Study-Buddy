@@ -1,0 +1,14 @@
+{
+  "title": "Projectile Motion",
+  "description": "Visualization of projectile motion under gravity without air resistance.",
+  "parameters": {
+    "initialVelocity": 90,
+    "angle": 45,
+    "gravity": 2.8
+  },
+  "visualization": {
+    "type": "trajectory",
+    "xRange": [0, 100],
+    "yRange": [0, 60]
+  }
+}
