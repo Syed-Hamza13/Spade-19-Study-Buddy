@@ -24,7 +24,7 @@ async function saveWaveFile(
 }
 
 async function main() {
-   const ai = new GoogleGenAI({apiKey:"AIzaSyA2TytUGOZlHYQbG5rQG7vLd-y0Z00SR6Y"});
+   const ai = new GoogleGenAI({apiKey:"Your_API_Key"});
 
    const prompt = `TTS the following conversation between Joe and Jane:
          Joe: How's it going today Jane?
