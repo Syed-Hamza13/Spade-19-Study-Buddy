@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>AI + p5.js Hybrid Visualizer (JEE)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- UI Styles (plain CSS) -->
+<style>
+  :root{
+    --bg:#0b1226; --panel:#101a35; --light:#e7eefb; --muted:#9fb3d9; --accent:#5aa2ff; --danger:#ff5577;
+    --border:rgba(255,255,255,.08);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--light);font-family:system-ui,Segoe UI,Inter,Arial}
+  .app{display:grid;grid-template-columns: minmax(340px, 480px) 1fr; height:100dvh;}
+  .left{border-right:1px solid var(--border); display:flex; flex-direction:column; min-width:320px}
+  .right{position:relative; display:flex; flex-direction:column;}
+  header{padding:14px 16px; border-bottom:1px solid var(--border); background:#0d1731; display:flex; align-items:center; gap:10px}
+  header h1{font-size:16px; margin:0; font-weight:600}
+  header .badge{font-size:12px;color:#c8d7ff;background:#10214d;border:1px solid var(--border);padding:2px 8px;border-radius:999px}
+  .chat{flex:1; overflow:auto; padding:16px; display:flex; flex-direction:column; gap:12px; background:linear-gradient(180deg,#0b1226 0%, #0c1530 100%)}
+  .msg{max-width:90%; padding:10px 12px; border:1px solid var(--border); border-radius:12px; line-height:1.35}
+  .me{align-self:flex-end; background:#0f224a}
+  .ai{align-self:flex-start; background:#0f1e3f}
+  .sys{align-self:center; background:#0f1a35; color:#b9c7ea; font-size:12px}
+  .inputbar{display:flex; gap:8px; padding:12px; border-top:1px solid var(--border); background:#0c1530}
+  textarea{flex:1; resize:none; height:56px; padding:10px 12px; border-radius:12px; border:1px solid var(--border); background:#0b162f; color:var(--light)}
+  button{height:56px; padding:0 16px; border-radius:12px; border:1px solid var(--border); background:#143166; color:#eaf2ff; cursor:pointer}
+  button.secondary{background:#0f1e3f}
+  button.ghost{background:transparent}
+  button:disabled{opacity:.6; cursor:not-allowed}
+  .right-top{padding:10px 12px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px}
+  .right-top .pill{font-size:12px; padding:4px 10px; border-radius:999px; background:#0f1e3f; border:1px solid var(--border); color:#b9c7ea}
+  .canvas-wrap{flex:1; position:relative; background:radial-gradient(1000px 500px at 60% -100px,#182a63 0,#0b1226 40%, #0b1226 100%)}
+  iframe#vizFrame{position:absolute; inset:0; width:100%; height:100%; border:0; background:#0b1226}
+  details{border-top:1px solid var(--border); background:#0b152e}
+  summary{cursor:pointer; padding:10px 12px; color:#cfe0ff}
+  pre{margin:0; padding:12px; overflow:auto; background:#0b1226; border-top:1px dashed var(--border); color:#cfe0ff}
+  .mini{font-size:12px; color:var(--muted)}
+  .warn{color:var(--danger)}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- LEFT: Chat -->
+  <section class="left">
+    <header>
+      <h1>Student Tutor • Physics/Math (JEE)</h1>
+      <span class="badge">Hybrid: JSON + p5.js</span>
+    </header>
+
+    <div id="chat" class="chat">
+      <div class="msg sys">Type a concept or example. The AI will reply + generate visualization code (p5.js) or JSON.</div>
+      <div class="msg ai">
+        Hi! Tell me what to visualize. For example: <br>
+        <span class="mini">“Projectile motion of a ball with v₀=30 m/s, θ=45°”</span><br>
+        <span class="mini">“Simple pendulum, small-angle, L=1 m, show energy vs time”</span><br>
+        <span class="mini">“SHM: x(t)=A cos(ωt+φ), animate displacement/velocity/acceleration”</span>
+      </div>
+    </div>
+
+    <div class="inputbar">
+      <textarea id="prompt" placeholder="Ask your question or say which example to visualize…"></textarea>
+      <button id="sendBtn">Send</button>
+      <button id="demoBtn" class="secondary" title="Use a built-in demo">Demo</button>
+    </div>
+
+    <details>
+      <summary>Developer Panel (AI response details)</summary>
+      <pre id="rawOut">(AI response will appear here)</pre>
+    </details>
+  </section>
+
+  <!-- RIGHT: Visualization -->
+  <section class="right">
+    <div class="right-top">
+      <span class="pill">Canvas: p5.js</span>
+      <span class="pill">Mode: AI p5 code ⟶ fallback JSON engine</span>
+      <span class="pill">Secure: sandboxed iframe</span>
+    </div>
+    <div class="canvas-wrap">
+      <iframe id="vizFrame" sandbox="allow-scripts allow-same-origin"></iframe>
+    </div>
+  </section>
+</div>
+
+<!-- p5 is loaded inside the iframe, not here, to sandbox AI code -->
+
+<script>
+/**
+ * FRONTEND LOGIC
+ * - Sends prompt to backend /api/generate (Gemini) and expects JSON with:
+ * {
+ *   answer: "string",                        // AI's textual explanation
+ *   visual_code: "p5.js sketch code",        // optional
+ *   visual_json: { ... }                     // optional — our mini JSON engine will render it
+ * }
+ * Rendering priority: visual_code > visual_json
+ *
+ * SECURITY: We sandbox-run untrusted p5 code inside an <iframe> with restricted sandbox flags.
+ * NOTE: Do NOT expose your API key in frontend. Use the Node.js proxy below.
+ */
+
+const chatEl = document.getElementById('chat');
+const promptEl = document.getElementById('prompt');
+const sendBtn = document.getElementById('sendBtn');
+const demoBtn = document.getElementById('demoBtn');
+const rawOut = document.getElementById('rawOut');
+const vizFrame = document.getElementById('vizFrame');
+
+function addMsg(text, who='me'){
+  const div = document.createElement('div');
+  div.className = `msg ${who}`;
+  div.innerHTML = text.replace(/\n/g,'<br>');
+  chatEl.appendChild(div);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function setRaw(obj){
+  rawOut.textContent = (typeof obj === 'string') ? obj : JSON.stringify(obj, null, 2);
+}
+
+// -------- Visualization sandbox loader ----------
+
+function renderAI({ visual_code, visual_json } = {}){
+  if (visual_code && typeof visual_code === 'string'){
+    loadP5CodeIntoIframe(visual_code);
+  } else if (visual_json){
+    loadJsonIntoIframe(visual_json);
+  } else {
+    // clear
+    loadBlankIntoIframe();
+  }
+}
+
+function loadBlankIntoIframe(){
+  const doc = vizFrame.contentDocument;
+  doc.open();
+  doc.write(`<!doctype html><html><head><meta charset="utf-8">
+    <style>html,body{margin:0;height:100%;background:#0b1226;color:#cfe0ff;font-family:system-ui}
+    .hint{position:absolute;inset:0;display:grid;place-items:center;opacity:.7}</style>
+  </head><body><div class="hint">No visualization</div></body></html>`);
+  doc.close();
+}
+
+function loadP5CodeIntoIframe(code){
+  const p5CDN = 'https://cdn.jsdelivr.net/npm/p5@1.9.2/lib/p5.min.js';
+  const safeHtml = `<!doctype html><html><head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>html,body{margin:0;background:#0b1226;color:#cfe0ff;font-family:system-ui}</style>
+    <script src="${p5CDN}"></script>
+  </head><body>
+    <script>
+      try {
+        ${code}
+      } catch (e){
+        document.body.innerHTML = '<pre style="color:#ff8899">Sketch Error:\\n'+String(e)+'</pre>';
+      }
+    </script>
+  </body></html>`;
+  const doc = vizFrame.contentDocument;
+  doc.open(); doc.write(safeHtml); doc.close();
+}
+
+function loadJsonIntoIframe(sceneJSON){
+  // Minimal JSON→p5 engine inside iframe (supports: circle, line, rect, text, path + simple per-frame rules)
+  const p5CDN = 'https://cdn.jsdelivr.net/npm/p5@1.9.2/lib/p5.min.js';
+  const engine = `
+    const CFG = ${JSON.stringify(sceneJSON)};
+    function evalExpr(expr, scope){
+      if (typeof expr === 'number') return expr;
+      if (typeof expr !== 'string') return expr;
+      if (!isNaN(Number(expr.trim()))) return Number(expr.trim());
+      const keys = Object.keys(scope); const vals = keys.map(k=>scope[k]);
+      try{ const fn = new Function(...keys, 'with(Math){return('+expr+');}');
+        return fn(...vals);
+      }catch(e){ return NaN; }
+    }
+    let variables={}, objects={};
+    function init(){
+      variables = Object.assign({t:0, dt:1/60, frame:0}, CFG.variables||{});
+      objects = {};
+      (CFG.objects||[]).forEach(d=>{
+        const name = d.name || ('obj_'+Math.random().toString(36).slice(2,8));
+        objects[name] = {name, type:d.type||'circle', props:Object.assign({}, d.props||{}), style:d.style||{}};
+      });
+    }
+    function step(dt){
+      const scope = Object.assign({}, variables);
+      for (let k in objects) scope[k]=objects[k].props;
+      const rules = CFG.rules||[];
+      for (const r of rules){
+        const assigns = r.assignments || [];
+        scope.radians = deg=>deg*Math.PI/180;
+        scope.degrees = rad=>rad*180/Math.PI;
+        scope.dt = dt; scope.t = variables.t;
+        for (const a of assigns){
+          const v = evalExpr(a.value, scope);
+          if (a.target.includes('.')){
+            const [obj,prop] = a.target.split('.');
+            if (objects[obj]) objects[obj].props[prop]=v;
+          } else { variables[a.target]=v; }
+          scope[a.target]=v;
+        }
+      }
+      variables.t += dt; variables.frame++;
+    }
+    function drawAll(p){
+      const disp = CFG.display||{};
+      if (disp.bgColor) p.background(...disp.bgColor); else p.background(13,20,45);
+      if (disp.showAxes){
+        p.push(); p.stroke(220,120); p.line(40,p.height-60,p.width-20,p.height-60); p.line(60,p.height-20,60,20); p.pop();
+      }
+      for (let name in objects){
+        const o = objects[name], s=o.style||{}, pr=o.props||{};
+        const scope = Object.assign({}, variables); scope[name]=pr;
+        const R = v => typeof v==='string' ? evalExpr(v,scope) : v;
+        p.push();
+        if (o.type==='circle'){ if(s.fill) p.fill(...s.fill); else p.fill(80,160,255);
+          p.noStroke(); p.ellipse(R(pr.x||0), R(pr.y||0), 2*R(pr.r||8), 2*R(pr.r||8)); }
+        else if (o.type==='rect'){ if(s.fill) p.fill(...s.fill); else p.fill(80,160,255);
+          p.noStroke(); p.rectMode(p.CENTER); p.rect(R(pr.x||0),R(pr.y||0),R(pr.w||20),R(pr.h||20)); }
+        else if (o.type==='line'){ p.noFill(); p.stroke(...(s.stroke||[230])); p.strokeWeight(s.strokeWeight||2);
+          p.line(R(pr.x1||0),R(pr.y1||0),R(pr.x2||0),R(pr.y2||0)); }
+        else if (o.type==='text'){ p.noStroke(); p.fill(...(s.fill||[230])); p.textSize(s.size||14);
+          p.text(pr.text||'', R(pr.x||10), R(pr.y||20)); }
+        else if (o.type==='path'){ p.noFill(); p.stroke(...(s.stroke||[255,120,120])); p.strokeWeight(s.strokeWeight||2);
+          p.beginShape(); for (const pt of (pr.points||[])){ p.vertex(R(pt[0]), R(pt[1])); } p.endShape(); }
+        p.pop();
+      }
+    }
+    let last=0;
+    new p5(p=>{
+      p.setup = ()=>{ const c=CFG.display?.canvas||{}; p.createCanvas(c.w||1000, c.h||600); p.textFont('system-ui'); init(); last=p.millis(); };
+      p.draw = ()=>{ const now=p.millis(); const dt=Math.min(0.05,(now-last)/1000); last=now; step(dt); drawAll(p); };
+    });
+  `;
+  const doc = vizFrame.contentDocument;
+  doc.open();
+  doc.write(`<!doctype html><html><head><meta charset="utf-8">
+    <style>html,body{margin:0;height:100%;background:#0b1226;color:#cfe0ff;font-family:system-ui}</style>
+    <script src="${p5CDN}"></script>
+  </head><body><script>${engine}<\/script></body></html>`);
+  doc.close();
+}
+
+// ------------- Chat handlers ----------------
+
+async function sendPrompt(){
+  const text = promptEl.value.trim();
+  if (!text) return;
+  promptEl.value = '';
+  addMsg(text, 'me');
+  sendBtn.disabled = true;
+
+  try{
+    // IMPORTANT: this endpoint must be implemented in Node.js (see guide below)
+    const resp = await fetch('/api/generate', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ prompt: text })
+    });
+    if (!resp.ok) throw new Error('Backend not reachable. Did you start the Node server?');
+    const data = await resp.json();
+
+    // Expect: { answer, visual_code?, visual_json? }
+    addMsg(data.answer || '(no answer)', 'ai');
+    setRaw(data);
+    renderAI(data);
+  }catch(e){
+    setRaw(String(e));
+    addMsg('Error: '+e.message, 'ai');
+  }finally{
+    sendBtn.disabled = false;
+  }
+}
+
+// Built-in demo (no backend needed)
+function runDemo(){
+  const demo = {
+    answer: "Projectile motion demo: v0=30 m/s, θ=42°. Blue dot shows position; pink path shows trajectory. Pause/resume via p5 play controls if added.",
+    // Prefer visual_code if present; remove it to test JSON fallback.
+    visual_code:
+`let t=0, v0=30, theta=42*Math.PI/180, g=9.8, S=10;
+function setup(){ createCanvas(1000,600); textFont('system-ui'); }
+function draw(){
+  background(13,20,45);
+  // axes
+  stroke(220,120); line(40,height-60,width-20,height-60); line(60,height-20,60,20);
+  // time
+  t += deltaTime/1000;
+  const vx = v0*Math.cos(theta), vy0=v0*Math.sin(theta);
+  const x = vx*t, y = vy0*t - 0.5*g*t*t;
+  const px = 100 + x*S, py = 520 - y*S;
+  // path
+  noFill(); stroke(255,120,140); beginShape();
+  for(let tt=0; tt<=t; tt+=0.02){
+    const xx=vx*tt, yy=vy0*tt-0.5*g*tt*tt;
+    vertex(100+xx*S, 520-yy*S);
+    if (yy<0) break;
+  }
+  endShape();
+  // ball
+  noStroke(); fill(80,160,255); circle(px,py,16);
+  // stop when ground
+  if (py>520){ t=0; }
+  // labels
+  noStroke(); fill(230); textSize(16);
+  text('Projectile (demo)  v0=30 m/s, θ=42°', 20, 24);
+}`,
+    // Fallback JSON version (uncomment to test by removing visual_code above)
+    /*
+    visual_json: {
+      "display":{"canvas":{"w":1000,"h":600},"bgColor":[13,20,45],"showAxes":true},
+      "variables":{"g":9.8,"S":10},
+      "objects":[
+        {"name":"ball","type":"circle","props":{"x":"100","y":"520","r":8},"style":{"fill":[80,160,255]}},
+        {"name":"path","type":"path","props":{"points":[]},"style":{"stroke":[255,120,140]}}
+      ],
+      "rules":[
+        {"assignments":[
+          {"target":"t","value":"(t||0)+dt"},
+          {"target":"v0","value":"30"},
+          {"target":"theta","value":"radians(42)"},
+          {"target":"vx","value":"v0*cos(theta)"},
+          {"target":"vy0","value":"v0*sin(theta)"},
+          {"target":"x","value":"vx*t"},
+          {"target":"y","value":"vy0*t-0.5*g*t*t"},
+          {"target":"ball.x","value":"100 + S*x"},
+          {"target":"ball.y","value":"520 - S*y"},
+          {"target":"path.points","value":"( (p=(typeof path!=='undefined'?path.props.points:[])), (p.push([100+S*x,520-S*y]), p) )"}
+        ]}
+      ]
+    }
+    */
+  };
+  addMsg('Demo: Projectile motion', 'me');
+  addMsg(demo.answer, 'ai');
+  setRaw(demo);
+  renderAI(demo);
+}
+
+sendBtn.addEventListener('click', sendPrompt);
+promptEl.addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendPrompt(); }});
+demoBtn.addEventListener('click', runDemo);
+
+// Load a blank panel initially
+loadBlankIntoIframe();
+</script>
+
+<!-- Quick instructions panel -->
+<div style="position:fixed;right:10px;bottom:10px;background:#0f1e3f;border:1px solid rgba(255,255,255,.08);padding:8px 10px;border-radius:10px;font-size:12px;color:#cfe0ff">
+  <b>Tips:</b> Click “Demo” if backend not ready. <span class="warn">Don’t expose API key in frontend</span>.
+</div>
+</body>
+</html>
